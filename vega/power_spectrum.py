@@ -136,12 +136,15 @@ class PowerSpectrum:
         # add non linear small scales
         skip_nl = self.skip_nl_model_in_peak and params["peak"]
         if "small scale nl" in self._config.keys() and not skip_nl:
-            if "arinyo" in self._config.get("small scale nl"):
+            nonlinear_mode = self._config.get("small scale nl").strip().lower()
+            if nonlinear_mode == "forestflow":
+                pk_full *= self.compute_dnl_forestflow(params)
+            elif nonlinear_mode == "arinyo":
                 pk_full *= self.compute_dnl_arinyo(params)
-            elif "mcdonald" in self._config.get("small scale nl"):
+            elif nonlinear_mode == "mcdonald":
                 pk_full *= self.compute_dnl_mcdonald()
             else:
-                print("small scale nl: must be either mcdonald or arinyo")
+                print("small scale nl: must be mcdonald, arinyo, or forestflow")
                 raise ValueError("Incorrect 'small scale nl' specified")
 
         # model the effect of binning
@@ -485,6 +488,57 @@ class PowerSpectrum:
                 return np.ones(dnl.shape)
 
         return self._arinyo_dnl_cache
+
+    def compute_dnl_forestflow(self, params):
+        """Return an externally supplied ForestFlow nonlinear correction.
+
+        Parameters
+        ----------
+        params : dict
+            Must contain ``forestflow_dnl``. It can be one array on this
+            component's ``(mu, k)`` grid, or a mapping keyed by data-set name.
+
+        Returns
+        -------
+        numpy.ndarray
+            The full Ly-alpha factor for Ly-alpha auto-correlations and its
+            square root for a single Ly-alpha tracer. Metal-only correlations
+            receive unity.
+
+        Notes
+        -----
+        The factor is deliberately supplied at the public ``chi2`` boundary.
+        Vega keeps ownership of its tracer, Kaiser, metal and peak/smooth
+        processing; it does not reimplement ForestFlow's kernel.
+        """
+        supplied = params.get("forestflow_dnl")
+        if supplied is None:
+            raise ValueError("small scale nl=forestflow requires forestflow_dnl")
+        if isinstance(supplied, dict):
+            if self._name not in supplied:
+                raise ValueError(f"missing ForestFlow correction for {self._name!r}")
+            supplied = supplied[self._name]
+        dnl = np.asarray(supplied, dtype=float)
+        expected = np.broadcast_shapes(self.muk_grid.shape, self.k_grid.shape)
+        if dnl.shape != expected:
+            raise ValueError(
+                "ForestFlow nonlinear correction has shape "
+                f"{dnl.shape}, expected Vega (mu, k) shape {expected}"
+            )
+        if not np.all(np.isfinite(dnl)):
+            raise ValueError("ForestFlow nonlinear correction contains non-finite values")
+        if np.any(dnl <= 0):
+            raise ValueError(
+                "ForestFlow nonlinear correction must be positive "
+                f"(minimum={dnl.min():.3e}, maximum={dnl.max():.3e})"
+            )
+        two_lya = "LY" in self.tracer1_name and "LY" in self.tracer2_name
+        one_lya = "LY" in self.tracer1_name or "LY" in self.tracer2_name
+        if two_lya:
+            return dnl
+        if one_lya:
+            return np.sqrt(dnl)
+        return np.ones_like(dnl)
 
     def compute_Gk(self, params):
         """Model the effect of binning of the cf.
