@@ -6,6 +6,45 @@ from numba import float64, njit
 from . import utils
 
 
+def _line_species(name):
+    """Return the species of a metal tracer name, e.g. 'SiII' for 'SiII(1190)'."""
+    return name.split("(")[0]
+
+
+def sii_x_sii_parameters(params):
+    """Return the validated SiII x SiII amplitude factor and decorrelation scale.
+
+    Parameters
+    ----------
+    params : dict
+        Computation parameters, optionally with ``forestflow_metal_sii_factor`` (``f > 0``)
+        and ``forestflow_metal_sii_decorrelation`` (``sigma >= 0`` in Mpc/h).
+
+    Returns
+    -------
+    tuple of float or None
+        ``(f, sigma)``; None for a parameter that is not supplied.
+
+    Raises
+    ------
+    ValueError
+        If a supplied value is not finite, ``f <= 0`` or ``sigma < 0``.
+    """
+    factor = params.get("forestflow_metal_sii_factor")
+    sigma = params.get("forestflow_metal_sii_decorrelation")
+    if factor is not None:
+        factor = float(factor)
+        if not np.isfinite(factor) or factor <= 0:
+            raise ValueError(f"forestflow_metal_sii_factor must be finite and > 0, got {factor}")
+    if sigma is not None:
+        sigma = float(sigma)
+        if not np.isfinite(sigma) or sigma < 0:
+            raise ValueError(
+                f"forestflow_metal_sii_decorrelation must be finite and >= 0 (Mpc/h), got {sigma}")
+    return factor, sigma
+
+
+
 class PowerSpectrum:
     """Power Spectrum computation and handling.
 
@@ -41,6 +80,12 @@ class PowerSpectrum:
         self.tracer2_type = copy.deepcopy(tracer2["type"])
 
         self._name = dataset_name
+        # SiII x SiII correlation (autos and crosses of the SiII lines, not SiIII), which can
+        # receive the forestflow_metal_sii_* amplitude factor and decorrelation
+        self._sii_x_sii = all(
+            tracer["type"] == "continuous" and _line_species(tracer["name"]) == "SiII"
+            for tracer in (tracer1, tracer2)
+        )
         self.k_grid = fiducial["k"]
         self.rmu_binning = rmu_binning
         self.use_Gk = self._config.getboolean("model binning", True)
@@ -508,6 +553,12 @@ class PowerSpectrum:
             multiplied by it. If ``forestflow_metal_decorrelation`` (metal
             tracer name to line-of-sight sigma in Mpc/h) is supplied, Ly-alpha x
             metal correlations are multiplied by ``exp(-(k_par sigma)^2 / 2)``.
+            SiII x SiII correlations (autos and crosses of SiII(1190), SiII(1193)
+            and SiII(1260)) are multiplied by ``forestflow_metal_sii_factor``
+            (``f > 0``) and by ``exp(-(k_par sigma)^2 / 2)`` with
+            ``forestflow_metal_sii_decorrelation`` (``sigma >= 0`` in Mpc/h), the
+            ``f_SiIIxSiII`` and ``sig_SiIIxSiII`` of the P1D Kaiser metal model;
+            each is optional and leaves the model unchanged when absent.
 
         Notes
         -----
@@ -575,6 +626,15 @@ class PowerSpectrum:
             sigma = decorrelation.get(other) if other_type == "continuous" else None
             if sigma is not None:
                 factor = factor * np.exp(-0.5 * (self.k_par_grid * float(sigma)) ** 2)
+        # Optional amplitude factor and line-of-sight decorrelation of the SiII x SiII
+        # correlations, decoupling them from the Ly-alpha x SiII biases as in the P1D Kaiser
+        # metal model (f_SiIIxSiII, sig_SiIIxSiII): f exp(-(k_par sigma)^2 / 2), sigma in Mpc/h.
+        if self._sii_x_sii:
+            sii_factor, sii_sigma = sii_x_sii_parameters(params)
+            if sii_factor is not None:
+                factor = factor * sii_factor
+            if sii_sigma is not None:
+                factor = factor * np.exp(-0.5 * (self.k_par_grid * sii_sigma) ** 2)
         return factor
 
     def compute_Gk(self, params):

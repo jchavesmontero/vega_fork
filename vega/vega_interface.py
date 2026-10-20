@@ -22,6 +22,34 @@ from vega.scale_parameters import ScaleParameters
 from . import correlation_item, data, interface_utils, utils
 
 
+def apply_parameter_overrides(config, overrides):
+    """Set values of the ``[parameters]`` section of a parsed main config.
+
+    Parameters
+    ----------
+    config : configparser.ConfigParser
+        Parsed main config; modified in place.
+    overrides : dict or None
+        Parameter name to value. ``None`` or an empty mapping leaves the config unchanged.
+
+    Raises
+    ------
+    ValueError
+        If a value is not a finite number, or a parameter to override is sampled ([sample]),
+        whose value would then not be the one used.
+    """
+    if not overrides:
+        return
+    sampled = set(config["sample"]) if config.has_section("sample") else set()
+    for name, value in overrides.items():
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f"parameter override {name} = {value} is not finite")
+        if name in sampled:
+            raise ValueError(f"cannot override {name}: it is sampled in [sample]")
+        config["parameters"][name] = repr(value)
+
+
 class VegaInterface:
     """Main Vega class.
 
@@ -37,13 +65,18 @@ class VegaInterface:
     global_cov = None
     _random_marg_coeff = None
 
-    def __init__(self, main_path):
+    def __init__(self, main_path, parameter_overrides=None):
         """
 
         Parameters
         ----------
         main_path : string
             Path to main.ini config file
+        parameter_overrides : dict, optional
+            Values replacing (or adding) entries of the ``[parameters]`` section of the main
+            config before anything is built, see :func:`apply_parameter_overrides`. Use it for
+            values that are frozen at initialization, such as the ``alpha_<metal>`` amplitude
+            exponents of the estimator-convention metal matrices.
         """
         try:
             package_version = version("vega")
@@ -55,6 +88,7 @@ class VegaInterface:
         self.main_config = configparser.ConfigParser()
         self.main_config.optionxform = lambda option: option
         self.main_config.read(utils.find_file(main_path))
+        apply_parameter_overrides(self.main_config, parameter_overrides)
 
         # Read the fiducial pk file
         self.fiducial = self._read_fiducial(self.main_config["fiducial"])

@@ -324,7 +324,10 @@ class Metals:
         the correlation is frozen. Everything else must stay fixed, in particular ``beta``,
         ``alpha`` of the metals, ``no-metal-decomp`` and ``metal-scaling``, and
         ``vega.interface_utils.check_metal_model_options`` refuses fast metals if any of them is
-        varied or set. The growth rate is replaced by its fiducial value.
+        varied or set. The growth rate is replaced by its fiducial value. The exception is the
+        SiII x SiII amplitude factor and decorrelation (``forestflow_metal_sii_factor``,
+        ``forestflow_metal_sii_decorrelation``), supplied at evaluation time: a SiII x SiII
+        correlation is recomputed whenever they change, so they can vary with fast metals.
 
         Parameters
         ----------
@@ -340,14 +343,16 @@ class Metals:
         1D Array
             metal cross-correlation function
         """
-        if corr_hash in self.cache_xi_metal_metal:
-            return self.cache_xi_metal_metal[corr_hash]
+        sii_key = None
+        if self.Pk_metal[corr_hash]._sii_x_sii:
+            sii_key = power_spectrum.sii_x_sii_parameters(pars)
+        cached = self.cache_xi_metal_metal.get(corr_hash)
+        if cached is not None and cached[0] == sii_key:
+            return cached[1]
 
-        self.cache_xi_metal_metal[corr_hash] = self.compute_metal_corr_slow(
-            pars, pk_lin, corr_hash, fast_metals=True
-        )
-
-        return self.cache_xi_metal_metal[corr_hash]
+        xi = self.compute_metal_corr_slow(pars, pk_lin, corr_hash, fast_metals=True)
+        self.cache_xi_metal_metal[corr_hash] = (sii_key, xi)
+        return xi
 
     def compute_xi_metal_cross_main(self, pk_lin, pars, corr_hash, beta1, beta2):
         """Compute M x main tracer metal cross-correlations with caching.
