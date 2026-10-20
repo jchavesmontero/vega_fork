@@ -503,7 +503,11 @@ class PowerSpectrum:
         numpy.ndarray
             The full Ly-alpha factor for Ly-alpha auto-correlations and its
             square root for a single Ly-alpha tracer. Metal-only correlations
-            receive unity.
+            receive unity. If ``forestflow_metal_pressure`` is supplied (same
+            grid, or a mapping by data-set name), each metal leg is further
+            multiplied by it. If ``forestflow_metal_decorrelation`` (metal
+            tracer name to line-of-sight sigma in Mpc/h) is supplied, Ly-alpha x
+            metal correlations are multiplied by ``exp(-(k_par sigma)^2 / 2)``.
 
         Notes
         -----
@@ -535,10 +539,43 @@ class PowerSpectrum:
         two_lya = "LY" in self.tracer1_name and "LY" in self.tracer2_name
         one_lya = "LY" in self.tracer1_name or "LY" in self.tracer2_name
         if two_lya:
-            return dnl
-        if one_lya:
-            return np.sqrt(dnl)
-        return np.ones_like(dnl)
+            factor = dnl
+        elif one_lya:
+            factor = np.sqrt(dnl)
+        else:
+            factor = np.ones_like(dnl)
+        # Optional pressure smoothing of each metal leg (continuous tracers
+        # other than Ly-alpha/beta), exp(-(k/k_p)^2 / 2) per leg, so that the
+        # metal terms match the P1D Kaiser metal model.
+        pressure = params.get("forestflow_metal_pressure")
+        if pressure is not None:
+            if isinstance(pressure, dict):
+                if self._name not in pressure:
+                    raise ValueError(f"missing ForestFlow metal pressure for {self._name!r}")
+                pressure = pressure[self._name]
+            pressure = np.asarray(pressure, dtype=float)
+            if pressure.shape != expected or np.any(pressure <= 0) or np.any(pressure > 1):
+                raise ValueError("ForestFlow metal pressure must be in (0, 1] on Vega's (mu, k) grid")
+            metal_legs = sum(
+                tracer_type == "continuous" and "LY" not in name
+                for name, tracer_type in ((self.tracer1_name, self.tracer1_type),
+                                          (self.tracer2_name, self.tracer2_type))
+            )
+            factor = factor * pressure**metal_legs
+        # Optional line-of-sight decorrelation between Ly-alpha and a metal,
+        # exp(-(k_par sigma)^2 / 2) with sigma in Mpc/h per metal tracer. It
+        # acts only on Ly-alpha x metal; metal autos/crosses are unaffected.
+        decorrelation = params.get("forestflow_metal_decorrelation")
+        if decorrelation is not None and one_lya and not two_lya:
+            other, other_type = (
+                (self.tracer2_name, self.tracer2_type)
+                if "LY" in self.tracer1_name
+                else (self.tracer1_name, self.tracer1_type)
+            )
+            sigma = decorrelation.get(other) if other_type == "continuous" else None
+            if sigma is not None:
+                factor = factor * np.exp(-0.5 * (self.k_par_grid * float(sigma)) ** 2)
+        return factor
 
     def compute_Gk(self, params):
         """Model the effect of binning of the cf.

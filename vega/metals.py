@@ -1,3 +1,4 @@
+import hashlib
 import copy
 
 import numpy as np
@@ -8,6 +9,22 @@ from scipy.sparse import csr_matrix, kron
 from . import coordinates, pktoxi, power_spectrum, redshift_weights, utils
 from . import correlation_func as corr_func
 
+
+
+
+def _hashable(value):
+    """Return a cache-key element for a parameter value.
+
+    Scalars are used as they are; arrays (e.g. an external ``forestflow_dnl``
+    nonlinear correction) and mappings of arrays are keyed by their content, so
+    the cache stays exact when such a value changes.
+    """
+    if isinstance(value, dict):
+        return tuple((key, _hashable(value[key])) for key in sorted(value))
+    array = np.asarray(value)
+    if array.ndim == 0:
+        return array.item()
+    return (array.shape, hashlib.sha1(np.ascontiguousarray(array).tobytes()).hexdigest())
 
 class Metals:
     """
@@ -365,8 +382,7 @@ class Metals:
         1D Array
             metal cross-correlation function
         """
-        par_array = np.array([pars[key] for key in sorted(pars.keys())])
-        xi_hash = (beta1, beta2, *tuple(par_array))
+        xi_hash = (beta1, beta2, *(_hashable(pars[key]) for key in sorted(pars.keys())))
 
         if xi_hash in self.cache_xi_metal_cross_main:
             xi = self.cache_xi_metal_cross_main[xi_hash]
